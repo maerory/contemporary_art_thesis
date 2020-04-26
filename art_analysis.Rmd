@@ -1,0 +1,467 @@
+---
+title: "Thesis Draft : Art Auction Data"
+name: "Joey Yoo"
+output: html_notebook
+---
+
+```{r global_options, include=FALSE}
+# Set the working directory for current step
+setwd("/Users/maeror/Downloads/Art_Analysis/")
+# Load the libraries
+library(xtable)
+library(Matrix)
+library(lme4)
+library(numDeriv)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(lme4)
+library(readxl)
+library(stringdist)
+library(data.table)
+library(utils)
+library(gridExtra)
+library(RLRsim)
+# Load the functions from src file
+# source("src/algorithm3.R")
+# source("src/algorithm3BootInt.R")
+# source("src/auxFunctions.R")
+# source("src/intervalStr.R")
+# source("src/algorithm3SEWorking.R")
+# #source("algorithm3SE.R")
+opts_chunk$set(tidy.opts=list(width.cutoff=50), tidy=TRUE, cache = TRUE)
+```
+
+## RAW DATA CLEANSING WITH R
+```{r}
+# Read the excel sheets and merge them to a single dataframe
+read_excel_allsheets <- function(filename, tibble = FALSE, bysheets = FALSE) {
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+  if(!tibble) x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  if (bysheets) {
+    return(x)
+  } else {
+    return(rbindlist(x))
+  }
+}
+```
+
+```{r}
+### Artworks with more than 1 artists are ommited (15 accounts)
+art1019 = read_excel_allsheets("data/artdata1019.xlsx")
+# Omit title for now
+data = art1019[,-2]
+# Change column types
+data$Birth = as.numeric(data$Birth)
+data$Death = as.numeric(data$Death)
+# Omit Birth NAs (artworks with multiple artists)
+data = data[!is.na(data$Birth),]
+# Categorial Variable for death
+data = cbind(data, "dead" = factor(ifelse(is.na(data$Death), 0, 1)))
+# Turn Location into Factor
+data$Loc = factor(data$Loc)
+# Add logrise
+geomrise = log(data$Price / sqrt(data$Low*data$High))
+data = cbind(data, "geomrise" = geomrise)
+# Filter only the contemporary artists (1900~ 2000)
+data = data[between(data$Birth,1900, 2000),]
+# Separate Time
+data$Year = as.numeric(substr(data$Date,1,4))
+
+head(data)
+write.csv(data, "art_mod1.csv")
+# Modify art_mod1 with python
+```
+
+### DATA LOADING
+```{r}
+#### LOAD DATA HERE!!!! #####
+# ARTDATA_MOD2 saves the record with all typo and birth year corrected.
+data = read.csv("art_mod2.csv", header=TRUE,stringsAsFactors = FALSE)
+# remove non-char data (wrong names)
+data = data[,-1]
+data = data[!grepl(":", data$Artist),]
+data = data[!is.na(data$Artist),]
+
+data$young = as.factor(data$young)
+data = data[,-11]
+# Unite the artist names, using the string distance
+## Unite to the most occuring name
+# originally 4057 of unique artists
+data = cbind(data, "dead" = factor(ifelse(is.na(data$Death), 0, 1)))
+data$age = data$Year - data$Birth 
+data = data[!is.na(data$age),]
+data$young = data$dead
+levels(data$young) = c("0","3")
+data$young = as.character(data$young)
+data[data$young == 0,]$young = as.character(factor(cut(data[data$dead==0,]$age, 3, labels=c(0,1,2))))
+data$young = as.factor(data$young)
+```
+
+
+```{r}
+# Augment the Data with currency information
+currUSD = read.csv("./1019 Currency_against_USD - Sheet1.csv")
+Rate = rep(0, dim(data)[1])
+
+for (i in 1:dim(data)[1]) {
+  curr_date = data[i,]$Date
+  currency = data[i,]$Curr
+  year = as.integer(substr(curr_date,1,4))
+  month = as.integer(substr(curr_date,6,7))
+  Rate[i] = currUSD[(currUSD$Year == year) & (currUSD$Month == month),currency]
+}
+
+data = cbind(data, Rate)
+rel_price = data$Price / data$Rate
+data = cbind(data, rel_price)
+head(data)
+```
+
+### Data Expository Graphs
+```{r}
+alive_artist = data[data$dead==0,]
+dead_artist = data[data$dead==1,]
+alive_mean = aggregate(alive_artist$rel_price, list(alive_artist$age), mean)
+dead_mean = aggregate(dead_artist$rel_price, list(dead_artist$age), mean)
+alive_age_division = cut(alive_mean$Group.1, breaks=seq(20,110,10))
+dead_age_division = cut(dead_mean$Group.1, breaks=seq(20,110,10))
+alive_mean = cbind(alive_mean, alive_age_division)
+dead_mean = cbind(dead_mean, dead_age_division)
+
+dead_mean = aggregate(dead_mean$x, list(dead_mean$dead_age_division), mean)
+alive_mean = aggregate(alive_mean$x, list(alive_mean$alive_age_division), mean)
+
+dead_mean$dead = rep(1,dim(dead_mean)[1])
+alive_mean$dead = rep(0,dim(alive_mean)[1])
+
+grouped_mean = rbind(dead_mean, alive_mean)
+grouped_mean$dead = as.factor(grouped_mean$dead)
+```
+
+```{r}
+gg <- ggplot(grouped_mean, aes(x=Group.1, y=x, fill=dead)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme(axis.text.x = element_text(angle=60,hjust=1)) +
+  labs(title="Adj. Mean Painting Price", x="Age",y="Price")
+plot(gg)
+ggsave("Adj.Mean Painting.png",device="png", width=7, height=4.5)
+```
+
+```{r}
+
+alive_geomrise = aggregate(alive_artist$geomrise, list(alive_artist$age), mean)
+dead_geomrise = aggregate(dead_artist$geomrise, list(dead_artist$age), mean)
+alive_age_division = cut(alive_geomrise$Group.1, breaks=seq(20,110,10))
+dead_age_division = cut(dead_geomrise$Group.1, breaks=seq(20,110,10))
+alive_geomrise = cbind(alive_geomrise, alive_age_division)
+dead_geomrise = cbind(dead_geomrise, dead_age_division)
+
+dead_geomrise = aggregate(dead_geomrise$x, list(dead_geomrise$dead_age_division), mean)
+alive_geomrise = aggregate(alive_geomrise$x, list(alive_geomrise$alive_age_division), mean)
+
+dead_geomrise$dead = rep(1,dim(dead_geomrise)[1])
+alive_geomrise$dead = rep(0,dim(alive_geomrise)[1])
+
+grouped_geomrise = rbind(dead_geomrise, alive_geomrise)
+grouped_geomrise$dead = as.factor(grouped_geomrise$dead)
+```
+
+
+```{r}
+gg <- ggplot(grouped_geomrise, aes(x=Group.1, y=x, fill=dead)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme(axis.text.x = element_text(angle=60,hjust=1)) +
+  labs(title="Adj. Geomrise Painting Price", x="Age",y="Price")
+plot(gg)
+ggsave("Adj.Geomrise Painting.png",device="png", width=7, height=4.5)
+```
+
+```{r}
+count_byartist = data %>% group_by(Artist,dead) %>% count() %>% arrange(desc(n))
+count_byartist = count_byartist[1:20,]
+count_byartist$Artist = factor(count_byartist$Artist, levels=count_byartist$Artist)
+gg = ggplot(count_byartist, aes(x=Artist, y=n, fill=dead)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle=60,hjust=1)) +
+  labs(title="Top Traded Artists (2010~2019)", x="Artist",y="Count")
+plot(gg)
+ggsave("Top Traded Artists.png",device="png", width=7, height=4.5)
+```
+
+```{r}
+data[data$Artist %in% count_byartist$Artist,] %>% group_by(Artist, Year) %>% summarise(mean_price = mean(Price))
+```
+
+```{r}
+# Histogram of response distribution
+gg <- ggplot(data, aes(x=geomrise)) +
+      geom_histogram() +
+      labs(title="Response Distribution")
+plot(gg)
+```
+
+```{r}
+#What is the best cut of the age?
+gg <- ggplot(data, aes(x=age, y=geomrise)) + 
+  geom_point(aes(col=dead)) + 
+  geom_smooth(method="loess", se=F) +
+  labs(subtitle="Age vs Rise",
+       y = "Geomrise",
+       x = "Age",
+       title = "Art Price",
+       caption ="Source: self")
+plot(gg)
+```
+
+```{r}
+# Histogram of age distribution
+gg <- ggplot(data, aes(x=age, fill=dead, color=dead)) + 
+        geom_histogram( alpha=0.5, position = "identity") +
+        labs(subtitle="Age range Histogram")
+plot(gg)
+```
+
+```{r}
+# Investigate the variance of the age group through time
+var_by_young = as.data.frame(data %>% group_by(young, Year) %>% summarise(var = var(log(Price))))
+gg1 <- ggplot(var_by_young, aes(x=Year, y=var, group=young, color=young)) +
+        geom_line() +
+        theme(legend.position="none") + 
+        labs(title="Yearly var. grouped by age-group")
+
+range_by_young = as.data.frame(data %>% group_by(young, Year) %>% summarise(range = var(log((High-Low)/sqrt(Low*High)))))
+gg2 <- ggplot(range_by_young, aes(x=Year, y=range, group=young, color=young)) +
+        geom_line() +
+        labs(title="Yearly range. grouped by age-group")
+
+gg12 = arrangeGrob(gg1, gg2, ncol=2)
+ggsave("Yearly Var.png",gg12, device="png", width=7, height=4.5)
+```
+
+- How price range effects the chance of beating or underperforming the expectation
+- average prices over age group?
+
+
+# DATA SUBSET
+
+```{r}
+#Subsetting the data with necessary variable - USING GEOMRISE
+subdata = data[,c(12,2,13,14,9,11,5,6,7)]
+# Death measured at the time of the selling
+# So some artists indicated alive might be dead now!
+levels(subdata$dead) = c(0,5)
+colnames(subdata) <- c("GEOMRISE", "NAME", "YEAR","AGE", "LOC", "PRICE","LOW", "HIGH", "YOUNG")
+head(subdata)
+# Note that factor baseline is AMSTERDAM and YOUNG 0
+# YOUNG =4 means dead
+```
+
+```{r}
+subdata = subdata %>% arrange(NAME)
+subdata = subdata %>% mutate(ID = as.numeric(group_indices(.,NAME)))
+
+temp = tabulate(subdata$ID)
+ID5 = which(temp >= 2)
+#Dataset containing only artists with at least 5 sales
+art5 = subdata[which(subdata$ID %in% ID5),]
+#Make a new data frame with columns for ID, YOUNG, and Var(logrise)
+varlogrise = rep(0, length(unique(art5$ID)))
+young = varlogrise
+count = 1
+for (i in unique(art5$ID)) {
+  temp = art5[which(art5$ID == i),]
+  young[count] = as.numeric(as.character(temp$YOUNG[1]))
+  varlogrise[count] = var(temp$GEOMRISE)
+  count = count+1
+}
+#Make plot. Remember that 0 means dead, 1-5 is increasing in age.
+boxplot(varlogrise ~ young, ylim=c(0,0.5))
+```
+
+### Data Modeling
+
+```{r}
+#Simple model only with fixed effects - GEOMRISE
+linear.art = lm(GEOMRISE ~ YEAR + YOUNG + LOC + log((HIGH - LOW) / sqrt(LOW * HIGH)), data=subdata)
+summary(linear.art)
+qqnorm(residuals(linear.art))
+qqline(residuals(linear.art))
+mixed.art = lmer(GEOMRISE ~ (1|NAME) + YOUNG + YEAR + LOC + log((HIGH - LOW) / sqrt(LOW * HIGH)), data=subdata)
+summary(mixed.art)
+```
+
+```{r}
+#Now Subset the Data using the NOMINAL PRICE
+subdata = data[,c(5,6,7,2,12,9,11,14,15,13)]
+#subdata$young = as.numeric(as.character(subdata$dead))
+#subdata[subdata$young == 0]$young = as.numeric((factor(cut(subdata[subdata$dead==0]$age, 4), labels=c(1,2,3,4))))
+#subdata$young = subdata$young - 1
+#subdata$young = as.factor(subdata$young)
+# young = 0 indicates death, 1~5 are dividedcx subgroups
+# Death measured at the time of the selling
+# So some artists indicated alive might be dead now!
+colnames(subdata) <- c("PRICE", "LOW", "HIGH", "NAME", "YEAR", "LOC","RATE", "YOUNG", "DEAD", "AGE")
+subdata$REGION = subdata$LOC
+subdata[subdata$LOC %in% c("London","Milan","Zurich","Amsterdam", "Paris"),]$REGION = "EU"
+subdata[subdata$LOC %in% c("Dubai","Mumbai"),]$REGION = "WA"
+subdata[subdata$LOC %in% c("Shanghai","Hong Kong"),]$REGION = "CN"
+subdata[subdata$LOC %in% c("New York"),]$REGION = "US"
+subdata$REGION = as.factor(subdata$REGION)
+head(subdata)
+```
+
+```{r}
+#Fitting Regression using nominal price
+linear.art = lm(log(PRICE) ~ YEAR + YOUNG + LOC + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+mixed.art = lmer(log(PRICE) ~ (1|NAME) + YOUNG + YEAR + LOC + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+lrtstat = as.numeric(2*(logLik(mixed.art) - logLik(linear.art)))
+pval = pchisq(lrtstat, 1, lower=FALSE)
+data.frame(lrtstat, pval)
+```
+
+```{r}
+# Exact  LR test to check random effects significance
+exactLRT(mixed.art, linear.art)
+```
+
+```{r}
+# Model Diagnositc
+p2 = ggplot(subdata, aes(sample=log(PRICE))) + stat_qq() + stat_qq_line(color="red") + 
+  ggtitle("QQplot") + theme_bw()
+# p1 = ggplot(mixed.art, aes(.fitted, .resid))+geom_point()
+#     p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+#     p1<-p1+xlab("Fitted values")+ylab("Residuals")
+#     p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+
+# ggsave("./graphs/Model2_residplot.png",p1, device="png", width=7, height=4.5)
+ggsave("./graphs/Model2_qqplot.png",p2, device="png", width=7, height=4.5)
+```
+
+```{r}
+# Grouping locational covariates
+subdata$REGION = subdata$LOC
+subdata[subdata$LOC %in% c("London","Milan","Zurich","Amsterdam", "Paris"),]$REGION = "EU"
+subdata[subdata$LOC %in% c("Dubai","Mumbai"),]$REGION = "WA"
+subdata[subdata$LOC %in% c("Shanghai","Hong Kong"),]$REGION = "CN"
+subdata[subdata$LOC %in% c("New York"),]$REGION = "US"
+subdata$REGION = as.factor(subdata$REGION)
+linear_regional.art = lm(log(PRICE) ~ YEAR + YOUNG + REGION + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+mixed_regional.art1 = lmer(log(PRICE) ~ (1|NAME) + AGE + YEAR + REGION + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+mixed_regional.art2 = lmer(log(PRICE) ~ (1 + DEAD|NAME)  + YOUNG + YEAR + REGION + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+#summary(mixed_regional.art)
+```
+
+
+```{r}
+# Model Diagnositc
+p2 <- ggplot(subdata, aes(sample=log(PRICE))) + stat_qq() + stat_qq_line(color="red") + 
+  ggtitle("QQ Plot") +
+  theme_bw()
+p1 <- ggplot(mixed_regional.art1, aes(.fitted, .resid))+geom_point()
+    p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+
+ggsave("./graphs/Inference_model2",grid.arrange(p2, p1, ncol=2), device="png", width=7, height=4.5)
+```
+
+### Filtering out for dead artists
+```{r}
+# Analyzing artists who have passed away during the time frame
+## subset the artist who died between 2010~2019
+artist_passed_1119 = unique(data[data$Death %in% seq(2011,2019),]$Artist)
+## from those artist, subset the artist who have sales record for both before and after
+subdata2 = data[data$Artist %in% artist_passed_1119,]
+sales_count = subdata2 %>% count(Artist) 
+# Subset artist who have more than 1 sales record
+sales_before_dead = subdata2[is.na(subdata2$Death),] %>% count(Artist)
+sales_after_dead = subdata2[!is.na(subdata2$Death),] %>% count(Artist)
+both_artist = intersect(sales_before_dead$Artist, sales_after_dead$Artist)
+
+subdata2 = subdata2[subdata2$Artist %in% both_artist,]
+
+subdata2 = subdata2[,c(5,6,7,2,12,9,11,13,15)]
+colnames(subdata2) <- c("PRICE", "LOW", "HIGH", "NAME", "YEAR", "LOC","RATE", "AGE", "DEAD")
+subdata2$REGION = subdata2$LOC
+subdata2[subdata2$LOC %in% c("London","Milan","Zurich","Amsterdam", "Paris"),]$REGION = "EU"
+subdata2[subdata2$LOC %in% c("Dubai","Mumbai"),]$REGION = "WA"
+subdata2[subdata2$LOC %in% c("Shanghai","Hong Kong"),]$REGION = "CN"
+subdata2[subdata2$LOC %in% c("New York"),]$REGION = "US"
+subdata2$REGION = as.factor(subdata2$REGION)
+head(subdata2)
+```
+
+```{r}
+mm1 = lmer(log(PRICE) ~ (1|NAME) + DEAD + I(log(HIGH*LOW)/2) + log(HIGH/LOW) + REGION + YEAR , data=subdata2)
+mm2 = lmer(log(PRICE) ~ (1 + DEAD|NAME) + DEAD + I(log(HIGH*LOW)/2) + log(HIGH/LOW) + REGION + YEAR , data=subdata2)
+anova(mm1,mm2)
+```
+
+```{r}
+# Model Diagnositc
+p2 <- ggplot(subdata2, aes(sample=log(PRICE))) + stat_qq() + stat_qq_line(color="red") + 
+  ggtitle("QQ Plot") +
+  theme_bw()
+p1 <- ggplot(mm2, aes(.fitted, .resid))+geom_point()
+    p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+
+ggsave("./graphs/Inference_model3",grid.arrange(p2, p1, ncol=2), device="png", width=7, height=4.5)
+```
+
+
+
+
+### Variance modeling
+```{r}
+var_by_young = as.data.frame(data %>% group_by(young, Year) %>% summarise(var = var(geomrise)))
+range_by_young = as.data.frame(data %>% group_by(young, Year) %>% summarise(range = var(log((High-Low)/sqrt(Low*High)))))
+var_data = merge(var_by_young, range_by_young)
+var_linear = lm(var ~ range + Year + young, data=var_data)
+range_linear = lm(range ~ Year + young, data=var_data)
+summary(range_linear)
+```
+
+
+```{r}
+#Try just on Art5
+#Create ID
+art5 = subdata %>% arrange(NAME)
+art5 = art5 %>% mutate(ID = as.numeric(group_indices(.,NAME)))
+#create inputs for function
+y = log(art5$PRICE)
+id = art5$ID
+X = unname(model.matrix(~REGION + YOUNG + YEAR + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data = art5))
+U = unname(model.matrix(~1, data = art5))
+Z = unname(model.matrix(~DEAD, data = art5))
+nIter = 10
+nBoot = 100
+#Bootstrap confidence intervals
+set.seed(19)
+art5ResBoot = algorithm3BootInt(y, X, U, Z, id, nIter, nBoot, printN = FALSE)
+#Model-based standard errors
+art5Res = algorithm3SE(y, X, U, Z, id, nIter, getSigmaSE = 1)
+sigma5SE = art5Res[[10]]
+sigma5SE = sigma5SE[1]
+```
+
+Additional Analysis
++ Variability of ranges for younger artist is higher??? Thus analyst see this as uncertainty in price? How fast does range stabilization happpen for an art product?
++ Logisitic model that allows prediction for sales over or 
+
+#### EXTRACT
+
+```{r}
+#model = lmer(log(PRICE) ~ (1|NAME) + YOUNG + YEAR + REGION + I(log(HIGH*LOW)/2) + log(HIGH/LOW), data=subdata)
+model = lmer(log(PRICE) ~ (1 + DEAD|NAME) + DEAD + I(log(HIGH*LOW)/2) + log(HIGH/LOW) + REGION + YEAR , data=subdata2)
+res.table = as.data.frame(coef(summary(model)))
+ran.table = as.data.frame(VarCorr(model))
+print(xtable(res.table, type = "latex", digits=4), file = "./latex_table/coef.tex")
+print(xtable(ran.table, type = "latex", digits=4), file = "./latex_table/var.tex")
+```
+
+
