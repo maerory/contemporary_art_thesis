@@ -6,7 +6,7 @@ output: html_notebook
 
 ```{r global_options, include=FALSE}
 # Set the working directory for current step
-setwd("/Users/maeror/Downloads/Art_Analysis/")
+setwd("/Users/maeror/Documents/projects/contemporary_art_thesis/")
 # Load the libraries
 library(xtable)
 library(Matrix)
@@ -220,8 +220,9 @@ plot(gg)
 # Histogram of age distribution
 gg <- ggplot(data, aes(x=age, fill=dead, color=dead)) + 
         geom_histogram( alpha=0.5, position = "identity") +
-        labs(subtitle="Age range Histogram")
+        labs(subtitle="Age Range Histogram")
 plot(gg)
+ggsave("Age Range.png",gg, device="png", width=7, height=4.5)
 ```
 
 ```{r}
